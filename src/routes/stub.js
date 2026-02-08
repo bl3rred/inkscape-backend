@@ -4,6 +4,8 @@ const { requireRole } = require("../middleware/requireRole");
 const { ROLES } = require("../constants/roles");
 const { sendSuccess } = require("../utils/apiResponse");
 const artistRoutes = require("./artist");
+const artistComplianceRoutes = require("./artistCompliance");
+const companyRoutes = require("./company");
 
 const router = express.Router();
 
@@ -28,5 +30,7 @@ router.get("/company/stub", verifyJwt, requireRole(ROLES.COMPANY), (req, res) =>
 });
 
 router.use("/artist", verifyJwt, requireRole(ROLES.ARTIST), artistRoutes);
+router.use("/artist", verifyJwt, requireRole(ROLES.ARTIST), artistComplianceRoutes);
+router.use("/company", verifyJwt, requireRole(ROLES.COMPANY), companyRoutes);
 
 module.exports = router;
