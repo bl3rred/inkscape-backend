@@ -23,7 +23,7 @@ const complianceEventSchema = new mongoose.Schema(
     artwork: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "Artwork",
-      required: true,
+      default: null,
       index: true
     },
     tag: {
@@ -62,10 +62,16 @@ const complianceEventSchema = new mongoose.Schema(
       required: true,
       index: true
     },
+    eventType: {
+      type: String,
+      enum: ["compliance", "similarity"],
+      default: "compliance",
+      index: true
+    },
     outcome: {
       type: String,
       enum: ["allowed", "conditional", "restricted"],
-      required: true,
+      default: null,
       index: true
     },
     reason: {
@@ -75,6 +81,50 @@ const complianceEventSchema = new mongoose.Schema(
     companyDeclaredUseCases: {
       type: [String],
       default: []
+    },
+    similarityFinding: {
+      category: {
+        type: String,
+        enum: ["work_at_risk", "may_be_at_risk"],
+        default: null
+      },
+      datasetPHash: {
+        type: String,
+        default: null
+      },
+      bits: {
+        type: Number,
+        default: null
+      },
+      prefix: {
+        type: String,
+        default: null
+      },
+      topMatches: {
+        type: [
+          {
+            artworkId: {
+              type: mongoose.Schema.Types.ObjectId,
+              ref: "Artwork",
+              default: null
+            },
+            securityTag: {
+              type: String,
+              default: null
+            },
+            similarityPercent: {
+              type: Number,
+              default: null
+            },
+            similarityBand: {
+              type: String,
+              enum: ["work_at_risk", "may_be_at_risk"],
+              default: null
+            }
+          }
+        ],
+        default: []
+      }
     },
     scannedAt: {
       type: Date,

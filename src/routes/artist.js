@@ -7,6 +7,7 @@ const Permission = require("../models/Permission");
 const { upload } = require("../middleware/upload");
 const { sendSuccess } = require("../utils/apiResponse");
 const { deleteTempFile, hashFileSha256 } = require("../utils/fileProcessing");
+const { computeImagePHash } = require("../utils/imageHash");
 const { parsePermissionPayload } = require("../utils/permissionPayload");
 
 const router = express.Router();
@@ -53,13 +54,18 @@ async function createArtworkRecord(file, artistUserId, permissionPayload) {
 
   try {
     const sha256Hash = await hashFileSha256(file.path);
+    const perceptualHash = await computeImagePHash(file.path, {
+      mimeType: file.mimetype,
+      fileName: file.originalname
+    });
 
     artwork = await Artwork.create({
       artist: artistUserId,
       originalFilename: file.originalname,
       mimeType: file.mimetype,
       sizeBytes: file.size,
-      sha256Hash
+      sha256Hash,
+      ...(perceptualHash ? { perceptualHash } : {})
     });
 
     tag = await Tag.create({

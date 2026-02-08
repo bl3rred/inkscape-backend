@@ -10,6 +10,14 @@ const Agreement = require("../models/Agreement");
 const { upload } = require("../middleware/upload");
 const { sendSuccess } = require("../utils/apiResponse");
 const { hashFileSha256, deleteTempFile } = require("../utils/fileProcessing");
+const {
+  HASH_BITS,
+  HASH_VERSION,
+  computeImagePHash,
+  hammingDistanceHex,
+  isImageFile,
+  similarityPercentFromHamming
+} = require("../utils/imageHash");
 const { computeOutcome } = require("../utils/compliance");
 const { parseUseCaseList, uniqueUseCases } = require("../utils/useCases");
 const {
@@ -124,6 +132,22 @@ function buildLatestPermissionLookup(permissions) {
   return byArtwork;
 }
 
+function similarityBandFromPercent(similarityPercent) {
+  if (!Number.isFinite(similarityPercent)) {
+    return null;
+  }
+
+  if (similarityPercent >= 80) {
+    return "work_at_risk";
+  }
+
+  if (similarityPercent >= 65) {
+    return "may_be_at_risk";
+  }
+
+  return null;
+}
+
 router.get("/profile", async (req, res, next) => {
   try {
     const profile = await CompanyProfile.findOne({ companyUser: req.user._id }).lean();
@@ -188,7 +212,8 @@ router.post("/scan", companyScanUploadMiddleware, async (req, res, next) => {
       scanEntries.push({
         sourceType: "individual",
         sourceName: file.originalname,
-        filePath: file.path
+        filePath: file.path,
+        mimeType: file.mimetype
       });
     }
 
@@ -203,7 +228,8 @@ router.post("/scan", companyScanUploadMiddleware, async (req, res, next) => {
         scanEntries.push({
           sourceType: "zip",
           sourceName: relativeName,
-          filePath: extractedFilePath
+          filePath: extractedFilePath,
+          mimeType: null
         });
       }
     }
@@ -218,7 +244,9 @@ router.post("/scan", companyScanUploadMiddleware, async (req, res, next) => {
       hashedEntries.push({
         sourceType: entry.sourceType,
         sourceName: entry.sourceName,
-        fileHash
+        fileHash,
+        filePath: entry.filePath,
+        mimeType: entry.mimeType
       });
     }
 
@@ -245,6 +273,10 @@ router.post("/scan", companyScanUploadMiddleware, async (req, res, next) => {
       restricted: [],
       unmatched: []
     };
+    const similarityFindings = {
+      work_at_risk: [],
+      may_be_at_risk: []
+    };
 
     const complianceEventDocuments = [];
 
@@ -257,6 +289,117 @@ router.post("/scan", companyScanUploadMiddleware, async (req, res, next) => {
           sourceName: entry.sourceName,
           fileHash: entry.fileHash
         });
+
+        if (!isImageFile({ mimeType: entry.mimeType, fileName: entry.sourceName })) {
+          continue;
+        }
+
+        const datasetPHash = await computeImagePHash(entry.filePath, {
+          mimeType: entry.mimeType,
+          fileName: entry.sourceName
+        });
+        if (!datasetPHash) {
+          continue;
+        }
+
+        const candidateArtworks = await Artwork.find({
+          "perceptualHash.prefix": datasetPHash.prefix,
+          "perceptualHash.version": HASH_VERSION,
+          "perceptualHash.bits": HASH_BITS
+        })
+          .select("_id artist perceptualHash")
+          .lean();
+
+        if (candidateArtworks.length === 0) {
+          continue;
+        }
+
+        const candidateArtworkIds = candidateArtworks.map((candidate) => String(candidate._id));
+        const candidateTags = candidateArtworkIds.length > 0
+          ? await Tag.find({ artwork: { $in: candidateArtworkIds }, status: "active" }).lean()
+          : [];
+        const candidateTagByArtworkId = buildTagLookup(candidateTags);
+
+        const scoredMatches = [];
+        for (const candidateArtwork of candidateArtworks) {
+          const candidateHash = candidateArtwork.perceptualHash && candidateArtwork.perceptualHash.value;
+          if (!candidateHash) {
+            continue;
+          }
+
+          const hammingDistance = hammingDistanceHex(datasetPHash.value, candidateHash);
+          const similarityPercent = similarityPercentFromHamming(hammingDistance, HASH_BITS);
+          const similarityBand = similarityBandFromPercent(similarityPercent);
+          if (!similarityBand) {
+            continue;
+          }
+
+          const candidateTag = candidateTagByArtworkId.get(String(candidateArtwork._id));
+          scoredMatches.push({
+            artworkId: String(candidateArtwork._id),
+            artistId: String(candidateArtwork.artist),
+            securityTag: candidateTag ? candidateTag.tagUuid : null,
+            similarityPercent,
+            similarityBand
+          });
+        }
+
+        if (scoredMatches.length === 0) {
+          continue;
+        }
+
+        scoredMatches.sort((left, right) => right.similarityPercent - left.similarityPercent);
+        const findingCategory = scoredMatches[0].similarityBand;
+        const topMatches = scoredMatches.slice(0, 5);
+
+        similarityFindings[findingCategory].push({
+          sourceType: entry.sourceType,
+          sourceName: entry.sourceName,
+          fileHash: entry.fileHash,
+          datasetPHash: datasetPHash.value,
+          bits: HASH_BITS,
+          prefix: datasetPHash.prefix,
+          topMatches
+        });
+
+        const impactedArtistIds = Array.from(new Set(topMatches.map((match) => match.artistId)));
+        for (const artistId of impactedArtistIds) {
+          const artistMatches = topMatches
+            .filter((match) => match.artistId === artistId)
+            .map((match) => ({
+              artworkId: match.artworkId,
+              securityTag: match.securityTag,
+              similarityPercent: match.similarityPercent,
+              similarityBand: match.similarityBand
+            }));
+
+          complianceEventDocuments.push({
+            companyUser: req.user._id,
+            companyProfile: companyProfile._id,
+            artist: artistId,
+            artwork: null,
+            tag: null,
+            permission: null,
+            agreement: null,
+            securityTag: null,
+            sourceType: entry.sourceType,
+            sourceName: entry.sourceName,
+            fileHash: entry.fileHash,
+            eventType: "similarity",
+            outcome: null,
+            reason: `Similarity flag: ${findingCategory}.`,
+            companyDeclaredUseCases: companyProfile.declaredUseCases || [],
+            similarityFinding: {
+              category: findingCategory,
+              datasetPHash: datasetPHash.value,
+              bits: HASH_BITS,
+              prefix: datasetPHash.prefix,
+              topMatches: artistMatches
+            },
+            scannedAt: new Date()
+          });
+        }
+
         continue;
       }
 
@@ -328,6 +471,7 @@ router.post("/scan", companyScanUploadMiddleware, async (req, res, next) => {
           sourceType: entry.sourceType,
           sourceName: entry.sourceName,
           fileHash: entry.fileHash,
+          eventType: "compliance",
           outcome,
           reason,
           companyDeclaredUseCases: companyProfile.declaredUseCases || [],
@@ -349,7 +493,8 @@ router.post("/scan", companyScanUploadMiddleware, async (req, res, next) => {
         conditional: grouped.conditional.length,
         restricted: grouped.restricted.length
       },
-      report: grouped
+      report: grouped,
+      similarityFindings
     });
   } catch (error) {
     return next(error);

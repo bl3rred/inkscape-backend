@@ -40,6 +40,7 @@ router.get("/compliance-events", async (req, res, next) => {
       count: events.length,
       events: events.map((event) => ({
         eventId: String(event._id),
+        eventType: event.eventType || "compliance",
         scannedAt: event.scannedAt,
         outcome: event.outcome,
         reason: event.reason,
@@ -48,7 +49,8 @@ router.get("/compliance-events", async (req, res, next) => {
         sourceName: event.sourceName,
         fileHash: event.fileHash,
         securityTag: event.securityTag,
-        agreementId: event.agreement ? String(event.agreement) : null
+        agreementId: event.agreement ? String(event.agreement) : null,
+        similarityFinding: event.similarityFinding || null
       }))
     });
   } catch (error) {
