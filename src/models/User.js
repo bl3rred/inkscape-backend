@@ -12,8 +12,11 @@ const userSchema = new mongoose.Schema(
     },
     role: {
       type: String,
-      required: true,
-      enum: [ROLES.ARTIST, ROLES.COMPANY]
+      default: null,
+      validate: {
+        validator: (value) => value === null || value === undefined || value === ROLES.ARTIST || value === ROLES.COMPANY,
+        message: "role must be one of: artist, company, or null."
+      }
     }
   },
   {

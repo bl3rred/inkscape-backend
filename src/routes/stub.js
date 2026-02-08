@@ -15,6 +15,17 @@ router.get("/auth/me", verifyJwt, (req, res) => {
   });
 });
 
+router.get("/me", verifyJwt, (req, res) => {
+  return res.status(200).json({
+    ok: true,
+    user: {
+      id: String(req.user._id),
+      auth0UserId: req.user.auth0UserId,
+      role: req.user.role ?? null
+    }
+  });
+});
+
 router.get("/artist/stub", verifyJwt, requireRole(ROLES.ARTIST), (req, res) => {
   return sendSuccess(res, {
     message: "Artist route access granted.",
